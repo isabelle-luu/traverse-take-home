@@ -6,6 +6,13 @@ The Healthchecks codebase is at `/app/`. It's a Django app for monitoring cron j
 
 Add a maintenance windows feature to the REST API so project owners can schedule maintenance periods. During an active maintenance window, checks in that project should report a `"maintenance"` status instead of `"up"`, `"down"`, or `"grace"`, and the API should reflect this state. This lets downstream consumers know that any downtime is expected and planned.
 
+## Files expected to change
+
+- `/app/hc/api/models.py`
+- `/app/hc/api/views.py`
+- `/app/hc/api/urls.py`
+- `/app/hc/api/migrations/` (new migration file)
+
 ## 1. `MaintenanceWindow` model (`/app/hc/api/models.py`)
 
 New model with these fields:
@@ -90,6 +97,28 @@ Add to the `api_urls` list (works across v1/v2/v3 automatically):
     path("maintenance/", views.maintenance, name="hc-api-maintenance"),
     path("maintenance/<uuid:code>/", views.delete_maintenance_window, name="hc-api-maintenance-delete"),
 
+## Acceptance Criteria
+
+- Required routes exist and are reachable under `/api/v1/`, `/api/v2/`, and `/api/v3/`:
+  - `GET /maintenance/`
+  - `POST /maintenance/`
+  - `DELETE /maintenance/<uuid>/`
+- `POST /maintenance/`:
+  - returns `201` and a window object when valid
+  - rejects invalid payloads with `400`
+  - rejects overlaps with `400`
+  - enforces 50-window project cap with `403`
+- `GET /maintenance/`:
+  - returns only windows for the authenticated project
+  - supports `?active=true` filtering
+- `DELETE /maintenance/<uuid>/`:
+  - returns `204` on success
+  - returns `403` for cross-project window
+  - returns `404` for missing window
+- `Check.get_status()` returns `"maintenance"` during an active window (except existing `"new"`/`"paused"` precedence).
+- `Check.to_dict()` includes `in_maintenance` as a boolean independent of current status.
+- Handled validation and permission errors must return JSON in the form `{"error": "<message>"}`.
+
 ## Constraints
 
 - Don't modify existing tests
@@ -97,3 +126,15 @@ Add to the `api_urls` list (works across v1/v2/v3 automatically):
 - Follow existing patterns for decorators, error responses, etc.
 - The maintenance status check in `get_status()` must use a DB query against `MaintenanceWindow`, not a cached value
 - `in_maintenance` in `to_dict()` should be evaluated independently (even paused/new checks can be in maintenance)
+
+## Non-goals
+
+- Do not modify unrelated API endpoints.
+- Do not change existing check pause/resume semantics.
+- Do not add frontend/UI changes.
+
+## Why this is hard
+
+- The change couples model status logic (`Check.get_status`) with API behavior (`to_dict()` + endpoints).
+- The overlap check and half-open interval rule (`start <= t < end`) have boundary traps.
+- A partial implementation can look correct in one surface but fail in another (model, API, routing).
